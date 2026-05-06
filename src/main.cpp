@@ -5,7 +5,7 @@
 
 const char * ssid = "@Hyatt_WiFi";
 const char * password = "";
-const char * webhook_url = "https://discord.com/api/webhooks/1501099874760790098/U4ahp5mJPrceyyiFp6LIe9HZcXKx8sL8oqmMCXE_YnR7pQzZSm70emhTVr0BrVD6widh";
+const char * webhook_url = "";
 
 const int pir_pin = 1;
 
