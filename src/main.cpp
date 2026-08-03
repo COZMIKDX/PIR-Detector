@@ -66,52 +66,6 @@ void keyboard_input() {
     }
 }
 
-void setup() {
-    M5Cardputer.begin(M5.config(), true);
-    M5Cardputer.Keyboard.begin();
-    // M5.begin();
-    M5.Lcd.setBrightness(0);
-
-    FastLED.addLeds<WS2812, LED_DATA_PIN, GRB>(leds, NUM_LEDS);
-
-    Serial.begin(115200);
-
-    Serial.println("Connecting to WiFi...");
-    WiFi.begin(ssid, password);
-
-    // Program will be stuck here until connected to WiFi
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-
-    // Don't really need to check if I keep the above loop... Might change this later.
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\nConnected to WiFi!");
-        setupTime();
-        messages.sendNTFYMessage("PIR Detector is now online!");
-    }
-    pinMode(PIR_PIN, INPUT_PULLDOWN); // HC-SR501 outputs HIGH when motion is detected.
-
-    messages.sendNTFYMessage("PIR device warming for 1 minute...");
-    leds[0] = CRGB::Red; // Set LED to red to indicate warming up
-    FastLED.show();
-    int start_time = millis();
-    // Wait for 1 minute to allow the PIR sensor to stabilize
-    while (millis() - start_time < 60000) {
-        M5Cardputer.update();
-        if (M5Cardputer.BtnA.wasPressed()) {
-            // skip PIR warm up.
-            break;
-        }
-    }
-    messages.sendNTFYMessage("PIR device is now ready!");
-    leds[0] = CRGB::Green; // Set LED to green to indicate ready
-    FastLED.show();
-
-    M5.Speaker.tone(1000, 200); // Play a tone to indicate the device has started
-}
-
 void updateLED() {
     if (silenceMode) {
         leds[0] = CRGB::Blue; // Set LED to blue to indicate silence mode
@@ -176,6 +130,52 @@ void checkSensor() {
     } else {
         lastMotionState = LOW;
     }
+}
+
+void setup() {
+    M5Cardputer.begin(M5.config(), true);
+    M5Cardputer.Keyboard.begin();
+    // M5.begin();
+    M5.Lcd.setBrightness(0);
+
+    FastLED.addLeds<WS2812, LED_DATA_PIN, GRB>(leds, NUM_LEDS);
+
+    Serial.begin(115200);
+
+    Serial.println("Connecting to WiFi...");
+    WiFi.begin(ssid, password);
+
+    // Program will be stuck here until connected to WiFi
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+
+    // Don't really need to check if I keep the above loop... Might change this later.
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nConnected to WiFi!");
+        setupTime();
+        messages.sendNTFYMessage("PIR Detector is now online!");
+    }
+    pinMode(PIR_PIN, INPUT_PULLDOWN); // HC-SR501 outputs HIGH when motion is detected.
+
+    messages.sendNTFYMessage("PIR device warming for 1 minute...");
+    leds[0] = CRGB::Red; // Set LED to red to indicate warming up
+    FastLED.show();
+    int start_time = millis();
+    // Wait for 1 minute to allow the PIR sensor to stabilize
+    while (millis() - start_time < 60000) {
+        M5Cardputer.update();
+        if (M5Cardputer.BtnA.wasPressed()) {
+            // skip PIR warm up.
+            break;
+        }
+    }
+    messages.sendNTFYMessage("PIR device is now ready!");
+    leds[0] = CRGB::Green; // Set LED to green to indicate ready
+    FastLED.show();
+
+    M5.Speaker.tone(1000, 200); // Play a tone to indicate the device has started
 }
 
 void loop() {
