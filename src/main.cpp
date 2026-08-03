@@ -2,11 +2,13 @@
 #include <WiFi.h>
 #include <M5Unified.h>
 #include <M5Cardputer.h>
-#include <HTTPClient.h>
+#include "Messages.hpp"
+
 #include <FastLED.h>
 
 #define NUM_LEDS 1
 #define LED_DATA_PIN 21
+#define PIR_PIN 2
 
 CRGB leds[NUM_LEDS];
 
@@ -17,55 +19,21 @@ const char * ntp_server = "pool.ntp.org";
 const long cst_offset_sec = -6 * 3600; // Central Time Zone (UTC-6) daylight savings. 
 float detect_beep_frequency = 2000;
 
-const int pir_pin = 2;
-bool muted = false;
+const unsigned long motionDebounceTime = 20 * 1000; // 20 seconds in milliseconds
+const unsigned long silenceModeCooldown= 30 * 1000; // 30 seconds in milliseconds
+bool lastMotionState = LOW;
+bool silenceMode = false;
+bool userMuted = false;
 
-void sendDiscordMessage(char * message) { 
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("Sending message to Discord...");
-        HTTPClient http;
-        http.begin(webhook_url);
-        http.addHeader("Content-Type", "application/json");
+uint16_t triggerCount = 0;
+uint8_t triggerCountThreshold = 3; // Number of triggers before activating silence mode.
+unsigned long lastMotionTime = 0;
+unsigned long lastTriggerTime = 0;
 
-        // Discord expects a JSON payload with a "content" field
-        String jsonPayload = "{\"content\": \"" + String(message) + "\"}";
-        int httpResponseCode = http.POST(jsonPayload);
+const char * regularMessage  = "Motion detected at the front desk!";
+const char * silenceModeMessage = "Someone is waiting at the desk.";
 
-        if (httpResponseCode > 0) {
-            Serial.printf("Response: %d\n", httpResponseCode);
-        } else {
-            Serial.printf("Error: %s\n", http.errorToString(httpResponseCode).c_str());
-        }
-        http.end();
-    }
-}
-
-void sendNTFYMessage(String message) {
-    struct tm timeinfo;
-    char timestring[64];
-    if (!getLocalTime(&timeinfo)) {
-        Serial.println("Failed to obtain time");
-        strcpy(timestring, "Unknown Time");
-    } else {
-        strftime(timestring, sizeof(timestring), "%H:%M:%S", &timeinfo);
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("Sending message to ntfy...");
-        HTTPClient http;
-        http.begin("https://ntfy.sh/CZMK-PIR-Detector");
-        http.addHeader("Content-Type", "text/plain");
-
-        int httpResponseCode = http.POST("[" + String(timestring) + "] [" + String(M5Cardputer.Power.getBatteryLevel()) + "%]" + message);
-
-        if (httpResponseCode > 0) {
-            Serial.printf("Response: %d\n", httpResponseCode);
-        } else {
-            Serial.printf("Error: %s\n", http.errorToString(httpResponseCode).c_str());
-        }
-        http.end();
-    }
-}
+Messages messages(webhook_url);
 
 void setupTime() {
     configTime(cst_offset_sec, 3600, ntp_server);
@@ -73,14 +41,16 @@ void setupTime() {
 
 void keyboard_input() {
     M5Cardputer.update();
+    // Keyboard presses are stored in a buffer until the MCU reads it.
+    // I think .isChange() will compare the current buffer contents to it's previous contents.
     if (M5Cardputer.Keyboard.isChange()) {
         if (M5Cardputer.Keyboard.isKeyPressed('m')) {
-            if (muted) {
+            if (userMuted) {
                 M5.Speaker.tone(1000, 200); // Play a tone to indicate unmuting
             } else {
                 M5.Speaker.tone(500, 200); // Play a different tone to indicate muting
             }
-            muted = !muted;
+            userMuted = !userMuted;
         }
 
         if (M5Cardputer.Keyboard.isKeyPressed('1')) {
@@ -88,6 +58,10 @@ void keyboard_input() {
         }
         else if (M5Cardputer.Keyboard.isKeyPressed('2')) {
             detect_beep_frequency = detect_beep_frequency + 100;
+        }
+
+        if (M5Cardputer.Keyboard.isKeyPressed('t')) {
+            messages.sendNTFYMessage("Test message");
         }
     }
 }
@@ -115,11 +89,11 @@ void setup() {
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("\nConnected to WiFi!");
         setupTime();
-        sendNTFYMessage("PIR Detector is now online!");
+        messages.sendNTFYMessage("PIR Detector is now online!");
     }
-    pinMode(pir_pin, INPUT_PULLDOWN); // HC-SR501 outputs HIGH when motion is detected.
+    pinMode(PIR_PIN, INPUT_PULLDOWN); // HC-SR501 outputs HIGH when motion is detected.
 
-    sendNTFYMessage("PIR device warming for 1 minute...");
+    messages.sendNTFYMessage("PIR device warming for 1 minute...");
     leds[0] = CRGB::Red; // Set LED to red to indicate warming up
     FastLED.show();
     int start_time = millis();
@@ -131,36 +105,82 @@ void setup() {
             break;
         }
     }
-    sendNTFYMessage("PIR device is now ready!");
+    messages.sendNTFYMessage("PIR device is now ready!");
     leds[0] = CRGB::Green; // Set LED to green to indicate ready
     FastLED.show();
 
     M5.Speaker.tone(1000, 200); // Play a tone to indicate the device has started
 }
 
-unsigned long lastMotionTime = 0;
-const unsigned long motionDebounceTime = 20 * 1000; // 20 seconds in milliseconds;
-bool lastMotionState = LOW;
-void loop() {
-    keyboard_input();
-    if (digitalRead(pir_pin) == HIGH) {
-        Serial.println(M5Cardputer.Power.getBatteryLevel());
-        if (lastMotionState == LOW && millis() - lastMotionTime > motionDebounceTime) { // Check for motion and debounce
-            Serial.println("Motion detected!");
-
-            if (!muted) {
-                M5.Speaker.tone(detect_beep_frequency, 200); // Play a tone to indicate motion detected
-            }
-
-            lastMotionTime = millis();
-            lastMotionState = HIGH;
-            // sendDiscordMessage("Motion Detected at the front desk!");
-            sendNTFYMessage("Motion Detected at the front desk!");
-            delay(1000); // Debounce delay
-        }
+void updateLED() {
+    if (silenceMode) {
+        leds[0] = CRGB::Blue; // Set LED to blue to indicate silence mode
+    } else {
+        leds[0] = CRGB::Green; // Set LED to green to indicate normal operation
     }
-    else {
+    FastLED.show();
+}
+
+void executeAlert() {
+    if (!userMuted && !silenceMode) {
+        M5.Speaker.tone(detect_beep_frequency, 200); // Play a tone to indicate motion detected
+    }
+
+    // sendDiscordMessage("Motion Detected at the front desk!");
+    messages.sendNTFYMessage(silenceMode ? silenceModeMessage : regularMessage);
+}
+
+void updateTimerAndState() {
+    if (millis() - lastTriggerTime > silenceModeCooldown) {
+        // Silence mode is active. Check if the cooldown period has passed to exit silence mode.
+        if (silenceMode == true) {
+            silenceMode = false;
+            leds[0] = CRGB::Green;
+            FastLED.show();
+        }
+
+        // Reset the trigger count after the cooldown period has passed. whether silence mode is active or not.
+        triggerCount = 0;
+    }
+}
+
+void handleValidTrigger() {
+    triggerCount++;
+    lastTriggerTime = millis();
+    lastMotionTime = millis();
+    lastMotionState = HIGH;
+
+
+    if (triggerCount == triggerCountThreshold) { // Activate silence mode
+        userMuted = true;
+        silenceMode = true;
+        leds[0] = CRGB::Blue;
+        FastLED.show();
+    }
+    
+    executeAlert();
+}
+
+void checkSensor() {
+    if (digitalRead(PIR_PIN) == HIGH) {
+        // Keep silence mode on if motion is detected during the cooldown period.
+        // This check is independent of the motion debounce time. 
+        // The final reading may be outside the debounce time, avoiding an unnecessary motion debounce time added to the cooldown period.
+        if (silenceMode == true) {
+            lastTriggerTime = millis(); // Reset the cooldown timer if motion is detected during silence mode
+        }
+
+        if (lastMotionState == LOW && millis() - lastMotionTime > motionDebounceTime) {
+            handleValidTrigger();
+        }
+    } else {
         lastMotionState = LOW;
     }
+}
+
+void loop() {
+    keyboard_input();
+    updateTimerAndState();
+    checkSensor();
 }
 
