@@ -106,7 +106,6 @@ void handleValidTrigger() {
 
 
     if (triggerCount == triggerCountThreshold) { // Activate silence mode
-        userMuted = true;
         silenceMode = true;
         leds[0] = CRGB::Blue;
         FastLED.show();
